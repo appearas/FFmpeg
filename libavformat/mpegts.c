@@ -163,6 +163,9 @@ struct MpegTSContext {
     int resync_size;
     int merge_pmt_versions;
 
+    int64_t ac3_eac3_descriptor_cb;
+    int64_t ac3_eac3_descriptor_flag;
+
     /******************************************/
     /* private mpegts data */
     /* scan context */
@@ -198,6 +201,8 @@ static const AVOption options[] = {
      {.i64 = 0}, 0, 1, 0 },
     {"skip_clear", "skip clearing programs", offsetof(MpegTSContext, skip_clear), AV_OPT_TYPE_BOOL,
      {.i64 = 0}, 0, 1, 0 },
+    {"ac3_eac3_descriptor_cb", "send AC3/EAC3 PSI descriptor to the user ", offsetof(MpegTSContext, ac3_eac3_descriptor_cb), AV_OPT_TYPE_INT64,
+     {.i64 = 0}, -1.0, 1e+100, 0 },
     { NULL },
 };
 
@@ -2078,6 +2083,12 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
         break;
     case 0x6a: /* ac-3_descriptor */
         {
+            if (ts->ac3_eac3_descriptor_cb != 0) {
+                void (*p)(AVFormatContext *, AVStream *, const uint8_t *, int) =
+                (void *)ts->ac3_eac3_descriptor_cb;
+
+                p(fc, st, *pp - 2, desc_len +2);
+            }
             int component_type_flag = get8(pp, desc_end) & (1 << 7);
             if (component_type_flag) {
                 int component_type = get8(pp, desc_end);
@@ -2092,6 +2103,12 @@ int ff_parse_mpeg2_descriptor(AVFormatContext *fc, AVStream *st, int stream_type
         break;
     case 0x7a: /* enhanced_ac-3_descriptor */
         {
+            if (ts->ac3_eac3_descriptor_cb != 0) {
+                void (*p)(AVFormatContext *, AVStream *, const uint8_t *, int) =
+                (void *)ts->ac3_eac3_descriptor_cb;
+
+                p(fc, st, *pp - 2, desc_len +2);
+            }
             int component_type_flag = get8(pp, desc_end) & (1 << 7);
             if (component_type_flag) {
                 int component_type = get8(pp, desc_end);
@@ -2288,6 +2305,7 @@ static void pmt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
 
     int mp4_descr_count = 0;
     Mp4Descr mp4_descr[MAX_MP4_DESCR_COUNT] = { { 0 } };
+    int force_pmt_parsing = 0;
     int i;
 
     av_log(ts->stream, AV_LOG_TRACE, "PMT: len %i\n", section_len);
@@ -2299,8 +2317,11 @@ static void pmt_cb(MpegTSFilter *filter, const uint8_t *section, int section_len
         return;
     if (h->tid != PMT_TID)
         return;
-    if (skip_identical(h, tssf))
+    if (ts->ac3_eac3_descriptor_flag == 0 && ts->ac3_eac3_descriptor_cb != 0) force_pmt_parsing = 1;
+    if (skip_identical(h, tssf) && force_pmt_parsing == 0)
         return;
+
+    ts->ac3_eac3_descriptor_flag = ts->ac3_eac3_descriptor_cb;
 
     av_log(ts->stream, AV_LOG_TRACE, "sid=0x%x sec_num=%d/%d version=%d tid=%d\n",
             h->id, h->sec_num, h->last_sec_num, h->version, h->tid);

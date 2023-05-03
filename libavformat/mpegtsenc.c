@@ -116,6 +116,7 @@ typedef struct MpegTSWrite {
     int64_t last_sdt_ts;
 
     int omit_video_pes_length;
+    int64_t custom_descriptor_cb;
 } MpegTSWrite;
 
 /* a PES packet header is generated every DEFAULT_PES_HEADER_FREQ packets */
@@ -489,36 +490,92 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
 
         /* write optional descriptors here */
         switch (st->codecpar->codec_type) {
+        case AVMEDIA_TYPE_VIDEO: {
+            switch (st->codecpar->codec_id) {
+            case AV_CODEC_ID_H264:
+                if (ts->custom_descriptor_cb != 0) {
+                    void(*f)(AVFormatContext*, AVStream*,
+                             uint8_t**, int*) = (void*)ts->custom_descriptor_cb;
+                    uint8_t * descriptor = 0;
+                    int length = 0;
+                    f(s, st, &descriptor, &length);
+                    while (0 < length--) *q++ = *descriptor++;
+                }
+                break;
+            case AV_CODEC_ID_HEVC:
+                if (ts->custom_descriptor_cb != 0) {
+                    void(*f)(AVFormatContext*, AVStream*,
+                             uint8_t**, int*) = (void*)ts->custom_descriptor_cb;
+                    uint8_t * descriptor = 0;
+                    int length = 0;
+                    f(s, st, &descriptor, &length);
+                    while (0 < length--) *q++ = *descriptor++;
+                }
+                break;
+            default:
+                break;
+            }
+        }
+        break;
         case AVMEDIA_TYPE_AUDIO:
-            if (codec_id == AV_CODEC_ID_AC3)
-                put_registration_descriptor(&q, MKTAG('A', 'C', '-', '3'));
-            if (codec_id == AV_CODEC_ID_EAC3)
-                put_registration_descriptor(&q, MKTAG('E', 'A', 'C', '3'));
-            if (ts->flags & MPEGTS_FLAG_SYSTEM_B) {
-                if (codec_id == AV_CODEC_ID_AC3) {
-                    DVBAC3Descriptor *dvb_ac3_desc = ts_st->dvb_ac3_desc;
+            if (st->codecpar->codec_id == AV_CODEC_ID_AAC_LATM ||
+                st->codecpar->codec_id == AV_CODEC_ID_AAC ) {
+                    if (ts->custom_descriptor_cb != 0) {
+                        void(*f)(AVFormatContext*, AVStream*,
+                                uint8_t**, int*) = (void*)ts->custom_descriptor_cb;
+                        uint8_t * descriptor = 0;
+                        int length = 0;
+                        f(s, st, &descriptor, &length);
+                        while (0 < length--) *q++ = *descriptor++;
+                    }
+            }
+            break;
+        default:
+            break;
+        }
 
-                    *q++=0x6a; // AC3 descriptor see A038 DVB SI
-                    if (dvb_ac3_desc) {
-                        int len = 1 +
-                                  !!(dvb_ac3_desc->component_type_flag) +
-                                  !!(dvb_ac3_desc->bsid_flag) +
-                                  !!(dvb_ac3_desc->mainid_flag) +
-                                  !!(dvb_ac3_desc->asvc_flag);
-
-                        *q++ = len;
-                        *q++ = dvb_ac3_desc->component_type_flag << 7 | dvb_ac3_desc->bsid_flag << 6 |
-                               dvb_ac3_desc->mainid_flag         << 5 | dvb_ac3_desc->asvc_flag << 4;
-
-                        if (dvb_ac3_desc->component_type_flag) *q++ = dvb_ac3_desc->component_type;
-                        if (dvb_ac3_desc->bsid_flag)           *q++ = dvb_ac3_desc->bsid;
-                        if (dvb_ac3_desc->mainid_flag)         *q++ = dvb_ac3_desc->mainid;
-                        if (dvb_ac3_desc->asvc_flag)           *q++ = dvb_ac3_desc->asvc;
-                    } else {
+        /* write optional descriptors here */
+        switch (st->codecpar->codec_type) {
+        case AVMEDIA_TYPE_AUDIO:
+            if (st->codecpar->codec_id==AV_CODEC_ID_AC3 && (ts->flags & MPEGTS_FLAG_SYSTEM_B)) {
+                if (ts->custom_descriptor_cb != 0) {
+                    void(*f)(AVFormatContext*, AVStream*,
+                             uint8_t**, int*) = (void*)ts->custom_descriptor_cb;
+                    uint8_t * descriptor = 0;
+                    int length = 0;
+                    f(s, st, &descriptor, &length);
+                    if (length > 0) {
+                        while (0 < length--) *q++ = *descriptor++;
+                    }
+                    else {
+                        *q++=0x6a; // AC3 descriptor see A038 DVB SI
                         *q++=1; // 1 byte, all flags sets to 0
                         *q++=0; // omit all fields...
                     }
-                } else if (codec_id == AV_CODEC_ID_EAC3) {
+                }
+                else {
+                    *q++=0x6a; // AC3 descriptor see A038 DVB SI
+                    *q++=1; // 1 byte, all flags sets to 0
+                    *q++=0; // omit all fields...
+                }
+            }
+            if (st->codecpar->codec_id==AV_CODEC_ID_EAC3 && (ts->flags & MPEGTS_FLAG_SYSTEM_B)) {
+               if (ts->custom_descriptor_cb != 0) {
+                    void(*f)(AVFormatContext*, AVStream*,
+                             uint8_t**, int*) = (void*)ts->custom_descriptor_cb;
+                    uint8_t * descriptor = 0;
+                    int length = 0;
+                    f(s, st, &descriptor, &length);
+                    if (length > 0) {
+                        while (0 < length--) *q++ = *descriptor++;
+                    }
+                    else {
+                        *q++=0x7a; // AC3 descriptor see A038 DVB SI
+                        *q++=1; // 1 byte, all flags sets to 0
+                        *q++=0; // omit all fields...
+                    }
+                }
+                else {
                     *q++=0x7a; // EAC3 descriptor see A038 DVB SI
                     *q++=1; // 1 byte, all flags sets to 0
                     *q++=0; // omit all fields...
@@ -1396,6 +1453,10 @@ static void mpegts_write_pes(AVFormatContext *s, AVStream *st,
                 write_pcr = 1;
             set_af_flag(buf, 0x40);
             q = get_ts_payload_start(buf);
+
+            /* Set transport priority indicator */
+            set_af_flag(buf, 0x20);
+            q = get_ts_payload_start(buf);
         }
         if (write_pcr) {
             set_af_flag(buf, 0x10);
@@ -1457,6 +1518,9 @@ static void mpegts_write_pes(AVFormatContext *s, AVStream *st,
                 header_len += 5;
                 flags      |= 0x40;
             }
+            /* es rate extension */
+            header_len +=3;
+
             if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
                 st->codecpar->codec_id == AV_CODEC_ID_DIRAC) {
                 /* set PES_extension_flag */
@@ -1483,6 +1547,8 @@ static void mpegts_write_pes(AVFormatContext *s, AVStream *st,
                 pes_header_stuffing_bytes = 0x24 - header_len;
                 header_len = 0x24;
             }
+            /* Force ES rate flag */
+            flags |= 0x10;
             len = payload_size + header_len + 3;
             /* 3 extra bytes should be added to DVB subtitle payload: 0x20 0x00 at the beginning and trailing 0xff */
             if (is_dvb_subtitle) {
@@ -1498,7 +1564,7 @@ static void mpegts_write_pes(AVFormatContext *s, AVStream *st,
             *q++ = len;
             val  = 0x80;
             /* data alignment indicator is required for subtitle and data streams */
-            if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE || st->codecpar->codec_type == AVMEDIA_TYPE_DATA)
+            //if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE || st->codecpar->codec_type == AVMEDIA_TYPE_DATA)
                 val |= 0x04;
             *q++ = val;
             *q++ = flags;
@@ -1511,6 +1577,14 @@ static void mpegts_write_pes(AVFormatContext *s, AVStream *st,
                 write_pts(q, 1, dts);
                 q += 5;
             }
+            /* write es rate */
+            uint32_t es_rate = st->codecpar->bit_rate / (8 * 50);
+            es_rate = es_rate << 1;
+            es_rate |= 0x00800001;
+            *q++ = 0xff & (es_rate >> 16);
+            *q++ = 0xff & (es_rate >> 8);
+            *q++ = 0xff & es_rate;
+
             if (pes_extension && st->codecpar->codec_id == AV_CODEC_ID_DIRAC) {
                 flags = 0x01;  /* set PES_extension_flag_2 */
                 *q++  = flags;
@@ -2125,6 +2199,9 @@ static const AVOption options[] = {
       OFFSET(pat_period_us), AV_OPT_TYPE_DURATION, { .i64 = PAT_RETRANS_TIME * 1000LL }, 0, INT64_MAX, ENC },
     { "sdt_period", "SDT retransmission time limit in seconds",
       OFFSET(sdt_period_us), AV_OPT_TYPE_DURATION, { .i64 = SDT_RETRANS_TIME * 1000LL }, 0, INT64_MAX, ENC },
+    {"custom_descriptor_cb", "request PSI descriptors from the user ",
+      offsetof(MpegTSWrite, custom_descriptor_cb), AV_OPT_TYPE_INT64,
+     {.i64 = 0}, -1.0, 1e+100, 0 },
     { NULL },
 };
 
