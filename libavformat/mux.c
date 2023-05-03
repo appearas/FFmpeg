@@ -618,13 +618,15 @@ static int compute_muxer_pkt_fields(AVFormatContext *s, AVStream *st, AVPacket *
         ((!(s->oformat->flags & AVFMT_TS_NONSTRICT) &&
           st->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE &&
           st->codecpar->codec_type != AVMEDIA_TYPE_DATA &&
-          st->cur_dts >= pkt->dts) || st->cur_dts > pkt->dts)) {
+          st->cur_dts >= pkt->dts && st->cur_dts - pkt->dts < 90000)
+        || (st->cur_dts > pkt->dts && st->cur_dts - pkt->dts < 90000))) {
         av_log(s, AV_LOG_ERROR,
                "Application provided invalid, non monotonically increasing dts to muxer in stream %d: %s >= %s\n",
                st->index, av_ts2str(st->cur_dts), av_ts2str(pkt->dts));
         return AVERROR(EINVAL);
     }
-    if (pkt->dts != AV_NOPTS_VALUE && pkt->pts != AV_NOPTS_VALUE && pkt->pts < pkt->dts) {
+    if (pkt->dts != AV_NOPTS_VALUE && pkt->pts != AV_NOPTS_VALUE
+        && pkt->pts < pkt->dts && pkt->dts - pkt->pts < 90000) {
         av_log(s, AV_LOG_ERROR,
                "pts (%s) < dts (%s) in stream %d\n",
                av_ts2str(pkt->pts), av_ts2str(pkt->dts),
@@ -812,8 +814,9 @@ static int prepare_input_packet(AVFormatContext *s, AVPacket *pkt)
         /* check that the dts are increasing (or at least non-decreasing,
          * if the format allows it */
         if (st->cur_dts != AV_NOPTS_VALUE &&
-            ((!(s->oformat->flags & AVFMT_TS_NONSTRICT) && st->cur_dts >= pkt->dts) ||
-             st->cur_dts > pkt->dts)) {
+            ((!(s->oformat->flags & AVFMT_TS_NONSTRICT)
+              && st->cur_dts >= pkt->dts && st->cur_dts - pkt->dts < 90000) ||
+             (st->cur_dts > pkt->dts && st->cur_dts - pkt->dts < 90000)) {
             av_log(s, AV_LOG_ERROR,
                    "Application provided invalid, non monotonically increasing "
                    "dts to muxer in stream %d: %" PRId64 " >= %" PRId64 "\n",
@@ -821,7 +824,7 @@ static int prepare_input_packet(AVFormatContext *s, AVPacket *pkt)
             return AVERROR(EINVAL);
         }
 
-        if (pkt->pts < pkt->dts) {
+        if (pkt->pts < pkt->dts && pkt->dts - pkt->pts < 90000) {
             av_log(s, AV_LOG_ERROR, "pts %" PRId64 " < dts %" PRId64 " in stream %d\n",
                    pkt->pts, pkt->dts, st->index);
             return AVERROR(EINVAL);
